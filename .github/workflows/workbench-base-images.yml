@@ -19,6 +19,9 @@ jobs:
           - node:22-alpine
           - nginx:1.28-alpine
           - python:3.13-alpine
+          - mysql:8.4
+          - redis:7.4-alpine
+          - quay.io/keycloak/keycloak:26.7.3
     steps:
       - name: Scan public base image
         shell: bash
