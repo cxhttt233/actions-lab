@@ -1,0 +1,42 @@
+name: Workbench Public Base Image Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  trivy-image:
+    name: Trivy ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - maven:3.9.11-eclipse-temurin-17
+          - eclipse-temurin:17-jre-jammy
+          - node:22-alpine
+          - nginx:1.28-alpine
+          - python:3.13-alpine
+    steps:
+      - name: Scan public base image
+        shell: bash
+        run: |
+          mkdir -p reports
+          safe=$(echo '${{ matrix.image }}' | tr '/:' '__')
+          docker run --rm \
+            -v "$PWD/reports:/reports" \
+            aquasec/trivy:0.74.0 \
+            image \
+            --scanners vuln \
+            --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
+            --format json \
+            --output "/reports/${safe}.json" \
+            '${{ matrix.image }}'
+      - name: Upload report
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: trivy-${{ strategy.job-index }}
+          path: reports/
+          retention-days: 7
