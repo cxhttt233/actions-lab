@@ -14,13 +14,13 @@ jobs:
 
     steps:
       - name: Checkout audit controller
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           persist-credentials: false
           path: controller
 
       - name: Checkout private Workbench repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: cxhttt233/hop-cronicle-workbench
           ref: main
@@ -39,9 +39,9 @@ jobs:
         run: |
           set +e
           docker run --rm -v "$PWD/target:/repo" -v "$PWD/reports:/reports" \
-            zricethezav/gitleaks:v8.30.1 detect \
-            --source=/repo --report-format=json --report-path=/reports/gitleaks.json \
-            --redact=100 --exit-code=1 >/dev/null 2>&1
+            ghcr.io/gitleaks/gitleaks:v8.30.1 git \
+            --report-format=json --report-path=/reports/gitleaks.json \
+            --redact=100 --exit-code=1 /repo >/dev/null 2>&1
           echo $? > reports/gitleaks.exit
 
       - name: Trivy - vulnerabilities, secrets and misconfiguration
@@ -165,7 +165,7 @@ jobs:
           rm -f /tmp/report.pass /tmp/workbench-security-reports.tar.gz
 
       - name: Upload encrypted audit reports
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: workbench-security-audit-encrypted
           path: encrypted-report/
