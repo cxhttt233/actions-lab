@@ -29,6 +29,11 @@ jobs:
           ssh-key: ${{ secrets.WORKBENCH_DEPLOY_KEY }}
           path: target
 
+      - name: Materialize pinned Workbench upstreams
+        shell: bash
+        working-directory: target
+        run: python3 scripts/prepare.py
+
       - name: Prepare reports directory
         shell: bash
         run: mkdir -p reports
@@ -124,8 +129,13 @@ jobs:
                       osv_count += len(p.get("vulnerabilities") or [])
           semgrep_count = len((s or {}).get("results") or []) if isinstance(s, dict) else 0
           checkov_failed = 0
-          if isinstance(c, dict):
-              checkov_failed = ((c.get("summary") or {}).get("failed") or 0)
+          if isinstance(c, list):
+              checkov_failed = sum(
+                  int((section.get("summary") or {}).get("failed") or 0)
+                  for section in c if isinstance(section, dict)
+              )
+          elif isinstance(c, dict):
+              checkov_failed = int((c.get("summary") or {}).get("failed") or 0)
           lines = [
               "# Workbench security audit",
               "",
