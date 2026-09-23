@@ -1,0 +1,90 @@
+name: Workbench ZAP baseline
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_url:
+        description: "HTTPS Workbench staging/public URL you control"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: workbench-zap-baseline
+  cancel-in-progress: false
+
+jobs:
+  baseline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Validate target
+        shell: bash
+        env:
+          TARGET_URL: ${{ inputs.target_url }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from urllib.parse import urlparse
+          u = urlparse(os.environ["TARGET_URL"])
+          if u.scheme != "https" or not u.hostname:
+              raise SystemExit("target_url must be a valid HTTPS URL")
+          if u.username or u.password:
+              raise SystemExit("credentials must not be embedded in target_url")
+          print("Target validated")
+          PY
+
+      - name: OWASP ZAP passive baseline
+        id: zap
+        shell: bash
+        env:
+          TARGET_URL: ${{ inputs.target_url }}
+        run: |
+          set +e
+          mkdir -p zap-output
+          chmod 777 zap-output
+          docker run --rm             -v "$PWD/zap-output:/zap/wrk/:rw"             zaproxy/zap-stable:2.17.0             zap-baseline.py -t "$TARGET_URL" -m 2 -J zap.json -s             >zap-output/zap-run.log 2>&1
+          code=$?
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Publish sanitized ZAP summary
+        shell: bash
+        env:
+          ZAP_EXIT: ${{ steps.zap.outputs.exit_code }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from collections import Counter
+          from pathlib import Path
+          report = Path("zap-output/zap.json")
+          if not report.exists():
+              raise SystemExit("ZAP did not produce zap.json")
+          data = json.loads(report.read_text(encoding="utf-8"))
+          counts = Counter()
+          alerts = 0
+          for site in data.get("site") or []:
+              for alert in site.get("alerts") or []:
+                  alerts += 1
+                  code = str(alert.get("riskcode", "0"))
+                  counts[{"3":"HIGH","2":"MEDIUM","1":"LOW","0":"INFO"}.get(code, "UNKNOWN")] += 1
+          lines = [
+              "# Workbench ZAP passive baseline", "",
+              f"- Alerts: **{alerts}**",
+              f"- HIGH: **{counts['HIGH']}**",
+              f"- MEDIUM: **{counts['MEDIUM']}**",
+              f"- LOW: **{counts['LOW']}**",
+              f"- INFO: **{counts['INFO']}**",
+              f"- Scanner exit: `{os.environ.get('ZAP_EXIT','?')}`", "",
+              "Only aggregate counts are published. URLs, request details and the raw report stay on the ephemeral runner.",
+          ]
+          summary = "\n".join(lines) + "\n"
+          Path(os.environ["GITHUB_STEP_SUMMARY"]).write_text(summary, encoding="utf-8")
+          print(summary)
+          PY
+          if [ "$ZAP_EXIT" = "3" ]; then
+            echo "ZAP execution failed" >&2
+            exit 1
+          fi
