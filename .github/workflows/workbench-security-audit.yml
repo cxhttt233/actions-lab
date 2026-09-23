@@ -1,0 +1,128 @@
+name: Workbench Security Audit
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  security-audit:
+    name: Security audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout caller repository
+        uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Prepare reports directory
+        shell: bash
+        run: mkdir -p security-reports
+
+      - name: Gitleaks - repository history and current tree
+        shell: bash
+        continue-on-error: true
+        run: |
+          set +e
+          curl -fsSL -o /tmp/gitleaks.tar.gz             https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  /tmp/gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          /tmp/gitleaks detect             --source .             --report-format json             --report-path security-reports/gitleaks.json             --redact=100             --exit-code 1             > security-reports/gitleaks.log 2>&1
+          echo $? > security-reports/gitleaks.exit
+          echo "Gitleaks completed"
+
+      - name: Trivy - dependencies, secrets and configuration
+        shell: bash
+        continue-on-error: true
+        run: |
+          set +e
+          docker run --rm             -v "$PWD:/repo:ro"             -v "$PWD/security-reports:/reports"             aquasec/trivy:0.74.0             fs             --scanners vuln,misconfig,secret             --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL             --format json             --output /reports/trivy-fs.json             /repo             > security-reports/trivy-fs.log 2>&1
+          echo $? > security-reports/trivy-fs.exit
+          echo "Trivy filesystem scan completed"
+
+      - name: OSV-Scanner - lockfiles and source dependencies
+        shell: bash
+        continue-on-error: true
+        run: |
+          set +e
+          docker run --rm             -v "$PWD:/src:ro"             ghcr.io/google/osv-scanner:v2.6.0             scan source --recursive --format json /src             > security-reports/osv.json             2> security-reports/osv.log
+          echo $? > security-reports/osv.exit
+          echo "OSV-Scanner completed"
+
+      - name: Semgrep - OWASP and language security rules
+        shell: bash
+        continue-on-error: true
+        run: |
+          set +e
+          python3 -m venv /tmp/semgrep-venv
+          /tmp/semgrep-venv/bin/pip install --disable-pip-version-check -q semgrep==1.177.0             > security-reports/semgrep-install.log 2>&1
+          /tmp/semgrep-venv/bin/semgrep scan             --config p/owasp-top-ten             --config p/java             --config p/javascript             --config p/docker             --json             --output security-reports/semgrep.json             .             > security-reports/semgrep.log 2>&1
+          echo $? > security-reports/semgrep.exit
+          echo "Semgrep completed"
+
+      - name: Checkov - Docker, Compose, Actions and IaC
+        shell: bash
+        continue-on-error: true
+        run: |
+          set +e
+          python3 -m venv /tmp/checkov-venv
+          /tmp/checkov-venv/bin/pip install --disable-pip-version-check -q checkov             > security-reports/checkov-install.log 2>&1
+          /tmp/checkov-venv/bin/checkov             -d .             --skip-download             --output json             > security-reports/checkov.json             2> security-reports/checkov.log
+          echo $? > security-reports/checkov.exit
+          echo "Checkov completed"
+
+      - name: Trivy - fixed base container images
+        shell: bash
+        continue-on-error: true
+        run: |
+          set +e
+          mkdir -p security-reports/images /tmp/trivy-cache
+          images=(
+            "maven:3.9.11-eclipse-temurin-17"
+            "eclipse-temurin:17-jre-jammy"
+            "node:22-alpine"
+            "nginx:1.28-alpine"
+            "python:3.13-alpine"
+          )
+          for image in "${images[@]}"; do
+            safe=$(echo "$image" | tr '/:' '__')
+            docker run --rm               -v /tmp/trivy-cache:/root/.cache/               -v "$PWD/security-reports/images:/reports"               aquasec/trivy:0.74.0               image               --scanners vuln               --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL               --format json               --output "/reports/${safe}.json"               "$image"               > "security-reports/images/${safe}.log" 2>&1
+            echo $? > "security-reports/images/${safe}.exit"
+          done
+          echo "Base-image scans completed"
+
+      - name: Public-exposure configuration snapshot
+        shell: bash
+        continue-on-error: true
+        run: |
+          {
+            echo "=== LISTEN / PORT / PROXY / AUTH-RELATED SETTINGS ==="
+            grep -RInE               '0\.0\.0\.0|listen[[:space:]]|ports:|proxy_pass|auth_request|permitAll|csrf|cors|Access-Control-Allow-Origin|X-Frame-Options|Content-Security-Policy|server_tokens|Authorization'               Dockerfile* compose*.yml deploy overlays/backend overlays/frontend/.env* .github/workflows               2>/dev/null || true
+          } > security-reports/exposure-review.txt
+          echo "Exposure configuration snapshot completed"
+
+      - name: Build compact scan index
+        shell: bash
+        run: |
+          {
+            echo "# Workbench security audit"
+            echo
+            echo "Repository: $GITHUB_REPOSITORY"
+            echo "Commit: $GITHUB_SHA"
+            echo "Generated: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo
+            echo "## Scanner exit codes"
+            find security-reports -name '*.exit' -maxdepth 3 -print -exec cat {} \; | sed 's#security-reports/##'
+          } > security-reports/INDEX.md
+
+      - name: Upload private audit reports
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: workbench-security-audit
+          path: security-reports/
+          if-no-files-found: error
+          retention-days: 7
