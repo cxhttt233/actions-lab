@@ -1,0 +1,19 @@
+name: Runner smoke
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Runner info
+        shell: bash
+        run: |
+          echo "OS=$RUNNER_OS"
+          uname -a
+          df -h
