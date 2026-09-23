@@ -1,0 +1,62 @@
+name: Workbench Pinned Upstream Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit-upstream:
+    name: Audit ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ruoyi-backend
+            repository: yangzongzhuan/RuoYi-Vue
+            ref: a51a838b71b446ea27256900efe7ed2faa2a02fd
+          - name: ruoyi-frontend
+            repository: yangzongzhuan/RuoYi-Vue3
+            ref: 838965c5a18d2c61b73ec30c6e288057aaa08b63
+
+    steps:
+      - name: Checkout pinned upstream
+        uses: actions/checkout@v7.0.1
+        with:
+          repository: ${{ matrix.repository }}
+          ref: ${{ matrix.ref }}
+          persist-credentials: false
+
+      - name: Trivy filesystem dependency audit
+        shell: bash
+        run: |
+          mkdir -p reports
+          docker run --rm \
+            -v "$PWD:/src:ro" \
+            -v "$PWD/reports:/reports" \
+            aquasec/trivy:0.74.0 \
+            fs \
+            --scanners vuln,misconfig,secret \
+            --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
+            --format json \
+            --output /reports/trivy.json \
+            /src
+
+      - name: OSV dependency audit
+        shell: bash
+        continue-on-error: true
+        run: |
+          docker run --rm \
+            -v "$PWD:/src:ro" \
+            ghcr.io/google/osv-scanner:v2.6.0 \
+            scan source --recursive --format json /src \
+            > reports/osv.json 2> reports/osv.log
+
+      - name: Upload public upstream reports
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: upstream-${{ matrix.name }}
+          path: reports/
+          retention-days: 7
